@@ -1,22 +1,46 @@
+# https://microsoft.github.io/z3guide/programming/Z3%20Python%20-%20Readonly/Introduction/
+
+# https://theory.stanford.edu/~nikolaj/programmingz3.html
+
 import re
+
+import time
+
+
+from itertools import combinations
+from z3 import z3
+
 from z3.z3 import Int, Bool, Solver, Implies, Not, sat, And, Real, Or, main_ctx
+
 import pandas as pd
 
+
+import os
+
+
 #GPT generated rules
-gpt_generated_rules = 'output/prompt_resp_rule_semantic_result_example.xlsx'
+gpt_generated_rules = '../input/ground_truth_rule_semantic.xlsx'
 gpt_generated_rules_file_read = pd.read_excel(gpt_generated_rules, sheet_name=0)
-gpt_generated_rules_list = gpt_generated_rules_file_read.GPT_Response.tolist()
+gpt_generated_rules_list = gpt_generated_rules_file_read.Ground_Truth_v2.tolist()
 # domian knowledge
-prod_cap_summary =  'input/prod_cap_summaries.xlsx'
+prod_cap_summary =  '../input/prod_cap_summaries.xlsx'
 prod_cap_summary_file_read = pd.read_excel(prod_cap_summary, sheet_name=0)
 prod_cap_sum_list = prod_cap_summary_file_read.cap_ID.tolist()
+
 #output
-z3_output_file = 'output/z3_analysis_results.xlsx'
+
+z3_output_file = '../output/z3_analysis_results.xlsx'
 df = pd.DataFrame(columns=["ID","RuleSet", "Z3Formula", "Z3Result", "Model", "Constraints"])
 df.to_excel(z3_output_file, index=False)
 
+# rule set for inconsistency test
+
+rule_set = ['If motionSensor.motion==active, then switch.on()', 'If motionSensor.motion==inactive, then switch.off()']
+
 def utilInequalty(inequality,int_var,att_value, is_left ):
+
     new_variable = None
+
     if inequality == '>=':
         if is_left:
             new_variable = att_value >= int_var
@@ -27,11 +51,13 @@ def utilInequalty(inequality,int_var,att_value, is_left ):
             new_variable = att_value <=  int_var
         else:
             new_variable = int_var <= att_value
+
     elif inequality == '>':
         if is_left:
             new_variable = att_value > int_var
         else:
             new_variable = int_var > att_value
+
     elif inequality == '<':
         if is_left:
             new_variable = att_value <  int_var
@@ -113,7 +139,6 @@ def getPossibleCommands(cap_name):
                 cmd = cmd.split('(')
                 cmd_name = cmd[0]
                 all_commands.append(cmd_name)
-
     return all_commands
 
 def extractAttrValueAndInequality(cond, is_period, period_attr):
@@ -132,6 +157,9 @@ def extractAttrValueAndInequality(cond, is_period, period_attr):
     elif '<' in cond:
         cap_att_split = cond.split("<")
         inequality = '<'
+    elif '!=' in cond: #new
+        cap_att_split = cond.split("!=")
+        inequality = '!='
     elif '==' in cond:
         cap_att_split = cond.split("==")
         if not is_period:
@@ -159,6 +187,7 @@ def processTriggercondition(tr_cond):
     inequality2 = None
     is_period = False
     cap_name_attr = None
+    not_equal = False
 
     term_array = tr_cond.split(".")
     cond = term_array.pop()
@@ -178,13 +207,19 @@ def processTriggercondition(tr_cond):
         if '>' in cond or '<' in cond or 'time' in cond:
             cap_attribute, att_value, inequality  = extractAttrValueAndInequality(cond, is_period, None)
         else:
-            cap_attribute = cond.split("==")[0]
-            att_value = cond.split("==")[1]
+            if '==' in cond:
+                cap_attribute = cond.split("==")[0]
+                att_value = cond.split("==")[1]
+            if '!=' in cond:
+                cap_attribute = cond.split("!=")[0]
+                att_value = cond.split("!=")[1]
+                not_equal = True
+
     if is_period:
         full_cap_name = cap_name_attr
     else:
         full_cap_name = "_".join(term_array)
-    cap_name = term_array.pop()
+        cap_name = term_array.pop()
 
     if 'time' in cap_attribute and not is_period:
         att_value = processTimeParameters(att_value)
@@ -192,14 +227,14 @@ def processTriggercondition(tr_cond):
         att_value2 = processTimeParameters(att_value2)
 
     attribute_values_in_capability = getPossibleAttrValues(cap_name, cap_attribute)
+
     if len(attribute_values_in_capability)>0:
         is_attr_binary_or_multi = True
         # if not create a constant Int or StringVal
     else:
         #consider binary for now
         is_attr_binary_or_multi = True
-
-    return full_cap_name, cap_name, cap_attribute, att_value,inequality,is_period, att_value2, inequality2, attribute_values_in_capability, is_attr_binary_or_multi
+    return full_cap_name, cap_name, cap_attribute, att_value,inequality,is_period, att_value2, inequality2, attribute_values_in_capability, is_attr_binary_or_multi, not_equal
 
 def processActions(ac_conseq):
     is_no_of_commands_binary_or_multi = False
@@ -212,7 +247,6 @@ def processActions(ac_conseq):
     if len(all_commands_in_capability)>0:
         is_no_of_commands_binary_or_multi = True
         #if not create a constant Int or StringVal and set == True
-
     return full_cap_name, cap_name, command_name, all_commands_in_capability, is_no_of_commands_binary_or_multi
 
 def updateRuleSet(before_z3_rules, all_rule_variables):
@@ -234,16 +268,17 @@ def updateRuleSet(before_z3_rules, all_rule_variables):
             if z3var_with_ineq not in found_ineq_var:
                 found_ineq_var.append(z3var_with_ineq)
                 print(z3var_with_ineq)
+
                 for b_rule in before_z3_rules:
                     for z3var_with_ineq in b_rule['and_triggers'] or z3var_with_ineq in b_rule['or_triggers']:
                         rules_with_inequality.append(b_rule)
     print(len(rules_with_inequality))
     a_command_found = False
+
     for v in all_rule_variables:
         z3var = None # currently checking
         rule_with_positive_action = []
         rule_with_negation = []
-
         if v['inequality'] is None: # e.g. switch_on
             z3var = v['variable'] # get command name
             print(z3var)
@@ -276,6 +311,7 @@ def updateRuleSet(before_z3_rules, all_rule_variables):
                             current_triggers.append(Not(command_completed))
                             pve_rule['and_triggers'] = current_triggers
                             before_z3_rules.append(pve_rule)
+
                 for ng_rule in rule_with_negation:
                     if ineq_rule == ng_rule:
                         print('found ng_rule')
@@ -302,6 +338,7 @@ def createZ3variablesAndCastValuesForInEqualities(full_cap_name, cap_attribute,a
     else:
         int_or_float_var = Int(full_cap_name.strip() + '_' + cap_attribute.strip())
     if type(att_value) == str:
+
         try:
             att_value = int(att_value)
         except ValueError:
@@ -313,24 +350,31 @@ def createZ3variablesAndCastValuesForInEqualities(full_cap_name, cap_attribute,a
 
 def createZ3TriggerConstraints(tr_cond, trigge_conditions, all_rule_variables):
     print('......createZ3TriggerConstraints..........')
-    full_cap_name, cap_name, cap_attribute, att_value, inequality,is_period,att_value2, inequality2, attribute_values_in_capability, is_attr_binary_or_multi = processTriggercondition(
+    full_cap_name, cap_name, cap_attribute, att_value, inequality,is_period,att_value2, inequality2, attribute_values_in_capability, is_attr_binary_or_multi, not_equal = processTriggercondition(
         tr_cond)
+    #tr_cond is an atomic condition inside a trigger clause. Condition may be as atomic Or argument or, atomic And argument
     is_relavant_variable_created = False
     new_variable = None
-    for rule_var in all_rule_variables:
-        if rule_var['full_cap_name'] == full_cap_name and rule_var['attr'] == cap_attribute:
+    for rule_var in all_rule_variables: #go through variables in all rules currently processed to check relevant variable is already created
+        if rule_var['full_cap_name'] == full_cap_name and rule_var['attr'] == cap_attribute: #if same capability and attribute
             if inequality is not None and rule_var['inequality'] == inequality and rule_var['att_value'] == att_value:
                 is_relavant_variable_created = True
-                trigge_conditions.append(rule_var['variable'])
+                if rule_var['is_period']:
+                    # added due to excception of rule 9s
+                    trigge_conditions.append(rule_var['variable1_period'])
+                    trigge_conditions.append(rule_var['variable2_period'])
+                else:
+                    trigge_conditions.append(rule_var['variable'])
             elif inequality is None:
                 is_relavant_variable_created = True
-                if rule_var['att_value'] != att_value:
+                if rule_var['att_value'] != att_value: #if the trigger condition's value different from created value use negation
                     print('use negation')  # do not create a new variable
                     print(Not(rule_var['variable']))
                     trigge_conditions.append(Not(rule_var['variable']))
                 if rule_var['att_value'] == att_value:
                     trigge_conditions.append(rule_var['variable'])
-    if not is_relavant_variable_created:
+
+    if not is_relavant_variable_created: # if the trigger variable is not in all variables list, create one
         if is_attr_binary_or_multi:
             variable_info = {}
             variable_info['capability'] = cap_name
@@ -343,6 +387,7 @@ def createZ3TriggerConstraints(tr_cond, trigge_conditions, all_rule_variables):
             variable_info['is_period'] = is_period
             variable_info['att_value2'] = att_value2
             variable_info['inequality2'] = inequality2
+
             if is_period:
                 int_or_float_var, att_value = createZ3variablesAndCastValuesForInEqualities(full_cap_name, cap_attribute, att_value, True)
                 variable_info['extra-variable'] = int_or_float_var
@@ -360,17 +405,40 @@ def createZ3TriggerConstraints(tr_cond, trigge_conditions, all_rule_variables):
                 variable_info['variable'] = new_variable
                 trigge_conditions.append(new_variable)
             else:
-                new_variable = Bool(full_cap_name.strip()+'_'+cap_attribute.strip() + '_' + att_value.strip())
-                variable_info['variable'] = new_variable
+                if not_equal:
+                    new_variable = Not(Bool(full_cap_name.strip() + '_' + cap_attribute.strip() + '_' + att_value.strip()))
+                    variable_info['variable'] = Bool(full_cap_name.strip() + '_' + cap_attribute.strip() + '_' + att_value.strip())
+                else:
+                    new_variable = Bool(full_cap_name.strip() + '_' + cap_attribute.strip() + '_' + att_value.strip())
+                    variable_info['variable'] = new_variable
                 trigge_conditions.append(new_variable)
 
             all_rule_variables.append(variable_info)
             # add as the true case
             print(trigge_conditions)
-
     return trigge_conditions, all_rule_variables
 
+def waitTimePeriod(ac_conseq):
+    time_period_in_seconds=0
+    if 'wait' in ac_conseq or 'WAIT' in ac_conseq:
+        command_name = 'wait'
+        pattern_time_parameter = r'\(\"(.*?)\"\)'
+        temparr = re.findall(pattern_time_parameter, ac_conseq)
+        time_parameter = temparr[0]
+        pattern_time_period = r'\b\d+\b'
+        temparr = re.findall(pattern_time_period, time_parameter)
+        time_period = temparr[0]
+        time_unit = time_parameter.replace(time_period, '').strip()
+        command_name = 'wait'
+
+        if 'minute' in time_unit:
+            time_period_in_seconds = int(time_period) * 60
+        else:
+            time_period_in_seconds = int(time_period)
+    return time_period_in_seconds
+
 def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, is_trigger_for_wait):
+    #####edited rule conclusions
     print('......createZ3ActionConsequences..........')
     is_relavant_variable_created = False
     is_no_of_commands_binary_or_multi = False
@@ -381,14 +449,18 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
     all_commands_in_capability = None
     time_period_in_seconds = None
     print(ac_conseq)
+
     if 'wait' in ac_conseq or 'WAIT' in ac_conseq:
         command_name = 'wait'
         pattern_time_parameter = r'\(\"(.*?)\"\)'
-        time_parameter = re.findall(pattern_time_parameter, ac_conseq)[0]
+        temparr= re.findall(pattern_time_parameter, ac_conseq)
+        time_parameter = temparr[0]
         pattern_time_period = r'\b\d+\b'
-        time_period =re.findall(pattern_time_period,time_parameter)[0]
+        temparr=re.findall(pattern_time_period,time_parameter)
+        time_period =temparr[0]
         time_unit = time_parameter.replace(time_period, '').strip()
         command_name = 'wait'
+
         if 'minute' in time_unit:
             time_period_in_seconds = int(time_period)*60
         else:
@@ -396,7 +468,6 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
         full_cap_name = None
         cap_name = None
         is_no_of_commands_binary_or_multi = True
-
     else:
         full_cap_name, cap_name, command_name, all_commands_in_capability, is_no_of_commands_binary_or_multi = processActions(ac_conseq)
 
@@ -404,10 +475,14 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
         if full_cap_name is not None and rule_var['full_cap_name'] == full_cap_name:
             is_relavant_variable_created = True
             if command_name in rule_var['variable'].decl().name():
+                if not (str(rule_var['variable']).startswith('ac_')):
+                    rule_var['variable']= Bool('ac_'+str(rule_var['variable']))
                 rule_conclusions.append(rule_var['variable']) #if same vairalbe is relevant use it
             else:
                 print('use negation')  # do not create a new variable
                 print(Not(rule_var['variable']))
+                if not (str(rule_var['variable']).startswith('ac_')):
+                    rule_var['variable'] = Bool('ac_' + str(rule_var['variable']))
                 rule_conclusions.append(Not(rule_var['variable']))
 
     if not is_relavant_variable_created:
@@ -422,7 +497,6 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
                     new_variable = int_command == time_period_in_seconds
                     inequality = '=='
                 variable_info['extra-variable'] = int_command
-
             else:
                 new_variable = Bool(full_cap_name.strip() + '_' + command_name.strip())
             variable_info['variable'] = new_variable
@@ -433,6 +507,7 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
             variable_info['full_cap_name'] = full_cap_name
             variable_info['inequality'] = inequality
             all_rule_variables.append(variable_info)
+
             # add as the true case
             print(new_variable)
             rule_conclusions.append(new_variable)
@@ -470,59 +545,49 @@ def createZ3Rule(trigge_conditions, or_trigge_conditions, rule_conclusions, is_e
 def transformRuleParamsToZ3Variables(trigger_clause,action_clause, all_rule_variables, is_else):
     print('......transformRuleToZ3formula..........')
     rules = []
-
     ###### create Z3 trigger constraints
     or_trigge_conditions = []
     trigge_conditions = []
-    for trigger in trigger_clause:
+
+    #a trigger clause is a list of lists. inner list has Or conditions, outer list has And conditions
+    for trigger in trigger_clause: #Single rule is considered, check the outer list of And conditions, trigger is an argument for and
          # combine or conditions in trigger
-        if len(trigger)>1:
+        if len(trigger)>1: #if argument for And contains Or
             print('or conditions')
-            for tr in trigger:
+            for tr in trigger: #tr is Or argument
                 # get the command name, which is the last element
                 print(tr.split(".").pop())
+                tr= tr.strip()
                 # check if the attribute is a boolean using prod capability schema info
                 or_trigge_conditions, all_rule_variables = createZ3TriggerConstraints(tr, or_trigge_conditions,
                                                                                    all_rule_variables)
+                #all rule variables are accumulated for each Or argument, And argument, rule
         elif len(trigger) == 1:
             tr_cond = trigger[0].strip()
             print(tr_cond)
             trigge_conditions, all_rule_variables = createZ3TriggerConstraints(tr_cond, trigge_conditions, all_rule_variables)
+            #if no Or argument
 
-    ## If wait action is in the action_clause, remove actions after wait and add as actions of new rule
-    new_trigger_conditions = [] #previous actions until wait
-    new_action_conditions = []  # post actions after wait
     is_wait = False
-    for action in action_clause:
-        ac_conseq = None
-        if len(action) == 1:
-            ac_conseq = action[0].strip()
-            print(ac_conseq)
-        if not is_wait:
-            new_trigger_conditions, all_rule_variables = createZ3ActionConsequences(ac_conseq, new_trigger_conditions, all_rule_variables, True)
-
-        else:
-            new_action_conditions, all_rule_variables = createZ3ActionConsequences(ac_conseq, new_action_conditions, all_rule_variables, False)
-            # remove the post actions from action_clause
-            action_clause.remove(action)
-        if 'wait' in ac_conseq:
-            is_wait = True
+    is_wait_v2 = False
 
     ###### create Z3 actions (rule consequences)
     rule_conclusions = []
     print(trigge_conditions)
     print(action_clause)
-    for action in action_clause:
+    wait_time=0
+
+    for action in action_clause: #if wait is a part of action clause, only prefix until wait considered
         if len(action) == 1:
             ac_conseq = action[0].strip()
             print(ac_conseq)
+            if is_wait_v2 == True:
+                ac_conseq = 'w_'+str(wait_time)+'_'+ ac_conseq
+            if 'wait' in ac_conseq:  # if wait is a part of the action
+                is_wait_v2 = True
+                wait_time=waitTimePeriod(ac_conseq)
+                continue
             rule_conclusions, all_rule_variables = createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, False)
-
-    # create new rule in Z3 semantics for WAIT rules
-    if is_wait:
-        new_rule = {'and_triggers': new_trigger_conditions, 'or_triggers': or_trigge_conditions,
-                    'actions': new_action_conditions, 'is_else': is_else, 'is_wait': is_wait}
-        rules.append(new_rule)
 
     # create the rule in Z3 semantics
     new_rule = {}
@@ -530,11 +595,12 @@ def transformRuleParamsToZ3Variables(trigger_clause,action_clause, all_rule_vari
     new_rule['or_triggers'] = or_trigge_conditions
     new_rule['actions'] = rule_conclusions
     new_rule['is_else'] = is_else
-    new_rule['is_wait'] = is_wait
+    new_rule['is_wait'] = is_wait  #a->x wait t y    #a->x, wait t  : x, wait t+1 -> y
     rules.append(new_rule)
     return rules, all_rule_variables
 
 def getRulesSetInZ3(rule_set, all_rule_variables):
+    ####Edit [ac]
     print('......getRulesSetInZ3..........')
     z3_rules = []
     before_z3_rules = []
@@ -557,11 +623,9 @@ def getRulesSetInZ3(rule_set, all_rule_variables):
         for conj in conjunc:
             disjunc = conj.split(' or ')
             trigger_clause.append(disjunc)
-
         actionsC = actions.strip().split(' and ')
         for ac in actionsC:
             action_clause.append([ac])
-
         if has_else:
             else_actions_commands = else_actions.strip().split(' and ')
             for ac in else_actions_commands:
@@ -573,18 +637,14 @@ def getRulesSetInZ3(rule_set, all_rule_variables):
         print(action_clause)
         rules, all_rule_variables = transformRuleParamsToZ3Variables(trigger_clause, action_clause, all_rule_variables, False)
         before_z3_rules = before_z3_rules + rules
-
     #UPDATE the rule set if necesary
     # before_z3_rules = updateRuleSet(before_z3_rules, all_rule_variables)
     print(before_z3_rules)
-
-
-
     print('*************** END **************************')
+
     ###################################################### END  #####################################################
-
-
     # create z3 rules
+
     for b_rule in before_z3_rules:
         z3_rule = createZ3Rule(b_rule['and_triggers'], b_rule['or_triggers'], b_rule['actions'], b_rule['is_else'])
         z3_rules.append(z3_rule)
@@ -592,11 +652,26 @@ def getRulesSetInZ3(rule_set, all_rule_variables):
     return z3_rules, all_rule_variables
 
 def prepreocessRuleString(gpt_rule_set_string):
+    gpt_rule_set = []
     if 'Rules for Actual Task:' in gpt_rule_set_string:
         gpt_rule_set = gpt_rule_set_string.replace('Rules for Actual Task:','')
-    # process input rule set to separate each generated rule
-    pattern = r'\[(.*?)\]'
-    gpt_rule_set = re.findall(pattern, gpt_rule_set_string)
+
+    # process nested rules
+    if "and [IF" in gpt_rule_set_string:
+        pattern = r'and \[IF.*?\]'
+        nested_parts = re.findall(pattern, gpt_rule_set_string)
+        for nested_part in nested_parts:
+            nested_part_string = nested_part.replace('and ','')
+            remaingn_part = gpt_rule_set_string.replace(nested_part, '')
+            gpt_rule_set.append(nested_part_string)
+            gpt_rule_set.append(remaingn_part)
+            # Need to address how to handle when further processing
+    else:
+        # process input rule set to separate each generated rule
+        pattern = r'\[(.*?)\]'
+        gpt_rule_set = re.findall(pattern, gpt_rule_set_string)
+
+
     return gpt_rule_set
 
 def z3solverCheckandSaveResults(solver,all_rule_variables, df, gpt_rule_set, z3_rule_set, constraints):
@@ -604,7 +679,6 @@ def z3solverCheckandSaveResults(solver,all_rule_variables, df, gpt_rule_set, z3_
     print("###################### start check #######################")
     if solver.check() == sat:
         model = solver.model()
-
         print("Satisfiable.")
         print("Model:")
         for vars in all_rule_variables:
@@ -620,7 +694,6 @@ def z3solverCheckandSaveResults(solver,all_rule_variables, df, gpt_rule_set, z3_
         with pd.ExcelWriter(z3_output_file, mode='a', engine='openpyxl', if_sheet_exists="overlay") as writer:
             df.to_excel(writer, sheet_name="Sheet1", startrow=writer.sheets["Sheet1"].max_row, index=False,
                         header=False)
-
     else:
         print("Unsatisfiable.")
         # update output file...
@@ -631,7 +704,92 @@ def z3solverCheckandSaveResults(solver,all_rule_variables, df, gpt_rule_set, z3_
     print("###################### end check #########################")
     return
 
+def z3solverCheckandSaveResultsV2(solver,all_rule_variables, df, gpt_rule_set, z3_rule_set, constraints, satTrue):
+    # Check satisfiability
+
+    print("###################### start check #######################")
+    if satTrue:
+        model = solver.model()
+        print("Satisfiable.")
+        print("Model:")
+
+        for vars in all_rule_variables:
+            if vars['type'] == 'trigger' and vars['inequality'] is not None:
+                print(str(vars['extra-variable']) + ": ", model[vars['extra-variable']])
+            elif vars['type'] == 'action' and vars['inequality'] is not None:
+                print(str(vars['extra-variable']) + ": ", model[vars['extra-variable']])
+            else:
+                print(str(vars['variable']) + ": ", model[vars['variable']])
+
+        # update output file...
+        df = pd.DataFrame(
+            [[i, gpt_rule_set, z3_rule_set, solver.check(), model, constraints]])  # columns=["cap_ID", "Summary"]
+        with pd.ExcelWriter(z3_output_file, mode='a', engine='openpyxl', if_sheet_exists="overlay") as writer:
+            df.to_excel(writer, sheet_name="Sheet1", startrow=writer.sheets["Sheet1"].max_row, index=False,
+                        header=False)
+    else:
+        print("Unsatisfiable.")
+        print(constraints)
+        # update output file...
+        df = pd.DataFrame(
+            [[i, gpt_rule_set, z3_rule_set, solver.check(), '', constraints]])  # columns=["cap_ID", "Summary"]
+        with pd.ExcelWriter(z3_output_file, mode='a', engine='openpyxl', if_sheet_exists="overlay") as writer:
+            df.to_excel(writer, sheet_name="Sheet1", startrow=writer.sheets["Sheet1"].max_row, index=False,
+                        header=False)
+    print("###################### end check #########################")
+    return
+
+def all_non_empty_subsets(input_list):
+    non_empty_subsets = []
+    n = len(input_list)
+    for i in range(1, n + 1):  # Generate combinations of length 1 to n
+        for combo in combinations(input_list, i):
+            non_empty_subsets.append(list(combo))
+    return non_empty_subsets
+
+def checkZ3Satisfiabilityv2(i, gpt_rule_set, z3_rule_set, all_rule_variables):
+    print('.................checkZ3Satisfiability.................')
+    # additional constraints
+    print('initial constraints..')
+    added_attr_list = []
+    saved_int_vars = []
+    saved_constraintes = []
+    solver = Solver()
+    solver.add(And(z3_rule_set))
+
+    z3_trig_rule_set=[]
+    for rule in z3_rule_set:
+        z3_trig_rule_set.append(rule.arg(0))
+
+    z3_trig_rule_subsets = all_non_empty_subsets(z3_trig_rule_set)#create subsets of all triggers
+
+    for rule_subset in z3_trig_rule_subsets:
+        saved_constraintes=[]
+        solver2=Solver()
+        solver2.add(And(*rule_subset))#add the conjuction of trigger condition subset to the solver
+        sol2sat = 0
+        if solver2.check()==sat:
+            sol2sat=1
+            model=solver2.model() # finding satisfiable model for the subset of trigger firing constraint to fire triggers
+            solver.push() #saving the rule set sat solver state to later pop the current constraints
+            for var in model:
+                solver.add(var() == model[var()])
+                saved_constraintes.append(var() == model[var()])
+
+        if solver.check()==sat:#for each trigger subset, z3_rule set checked for SAT
+            #print(str(solver.model())+" Satisfied and No Conflict")
+            z3solverCheckandSaveResultsV2(solver, all_rule_variables, df, gpt_rule_set, z3_rule_set, saved_constraintes,True)
+        else:
+            #print(str(solver2.model())+" "+ " Conflict Triggered")
+            z3solverCheckandSaveResultsV2(solver, all_rule_variables, df, gpt_rule_set, z3_rule_set, saved_constraintes, False)
+
+        if sol2sat==1:
+            solver.pop()
+    print("Ending for this rule set")
+    #z3solverCheckandSaveResults(solver, all_rule_variables, df, gpt_rule_set, z3_rule_set, saved_constraintes)
+
 def checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables):
+
     print('.................checkZ3Satisfiability.................')
     # additional constraints
     print('initial constraints..')
@@ -639,14 +797,18 @@ def checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables):
     saved_int_vars = []
     saved_constraintes = []
 
+#vars is a variable name in a rule, in this case a trigger condition, represents a binary expression
+#vars type, attr, variable
+#all rule variables contain different binary expressions in both triggers and actions
     for vars in all_rule_variables:
-        if vars['type'] == 'trigger'and vars['inequality'] is None and vars['attr'] not in added_attr_list:
+        if vars['type'] == 'trigger'and vars['inequality'] is None and vars['full_cap_name'] not in added_attr_list:
             # solver.add(vars['variable'])
             saved_constraintes.append(vars['variable'])
-            added_attr_list.append(vars['attr'])
+            added_attr_list.append(vars['full_cap_name'])
+
     for vars in all_rule_variables:
-        if vars['type'] == 'trigger' and vars['inequality'] is not None and vars['attr'] not in added_attr_list:
-            added_attr_list.append(vars['attr'])
+        if vars['type'] == 'trigger' and vars['inequality'] is not None and vars['full_cap_name'] not in added_attr_list:
+            added_attr_list.append(vars['full_cap_name'])
             if vars not in saved_int_vars:
                 saved_int_vars.append(vars)
 
@@ -658,9 +820,9 @@ def checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables):
             att_value = None
             if type(v['att_value']) == str:
                 try:
-                    att_value = int(v['att_value'])
+                    att_value = int(v['att_value']) #remove inverted commas of integer
                 except ValueError:
-                    att_value = 50  # Int(vars['att_value'])
+                    att_value = 50  # Int(vars['att_value']) #non specified value initialized to 50
                     print('error casting')
             elif type(v['att_value'] == float):
                 att_value = v['att_value']
@@ -672,29 +834,36 @@ def checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables):
                 solver.add(And(z3_rule_set))
                 for constraint in saved_constraintes:
                     solver.add(constraint)
+
                 z3solverCheckandSaveResults(solver, all_rule_variables, df, gpt_rule_set, z3_rule_set, saved_constraintes)
                 saved_constraintes.pop()
-
     else:
         solver = Solver()
         solver.add(And(z3_rule_set))
         for constraint in saved_constraintes:
             solver.add(constraint)
+
         z3solverCheckandSaveResults(solver, all_rule_variables, df, gpt_rule_set, z3_rule_set, saved_constraintes)
 
 ################################ start the program #############################################
+
 # get rule set
 i= 0
+
 for gpt_rule_set_string in gpt_generated_rules_list:
     i = i + 1
-    print('............................begins..('+str(i)+')..............................')
+    print('.......................................begins..('+str(i)+')....................................................')
     all_rule_variables = []
+    if i==32 or  i==47 or i==48 or i==49 or i==58 or i==29 or i==70 or  i==72 or i==73 or i==84 or i==94 or i==101 or i==103 or i==107or i==121:
+        print('Skip the nested rules for now')
+        print(gpt_rule_set_string)
+        continue
+
     gpt_rule_set = prepreocessRuleString(gpt_rule_set_string)
     print(gpt_rule_set)
     # transform the rule set into Z3 formulas
     z3_rule_set, all_rule_variables = getRulesSetInZ3(gpt_rule_set, all_rule_variables)
     print(z3_rule_set)
     # check satisfiable of the gpt generated rules set
-    checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables)
-
-################################ end the program #############################################
+    #checkZ3Satisfiability(i, gpt_rule_set, z3_rule_set, all_rule_variables)
+    checkZ3Satisfiabilityv2(i, gpt_rule_set, z3_rule_set, all_rule_variables)
