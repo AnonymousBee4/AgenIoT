@@ -483,7 +483,7 @@ def createZ3ActionConsequences(ac_conseq, rule_conclusions, all_rule_variables, 
                     inequality = '=='
                 variable_info['extra-variable'] = int_command
             else:
-                new_variable = Bool(full_cap_name.strip() + '_' + command_name.strip())
+                new_variable = Bool('ac_'+ full_cap_name.strip() + '_' + command_name.strip())
             variable_info['variable'] = new_variable
             variable_info['capability'] = cap_name
             variable_info['command'] = command_name
