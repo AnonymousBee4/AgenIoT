@@ -1,22 +1,7 @@
-# https://microsoft.github.io/z3guide/programming/Z3%20Python%20-%20Readonly/Introduction/
-
-# https://theory.stanford.edu/~nikolaj/programmingz3.html
-
 import re
-
-import time
-
-
 from itertools import combinations
-from z3 import z3
-
 from z3.z3 import Int, Bool, Solver, Implies, Not, sat, And, Real, Or, main_ctx
-
 import pandas as pd
-
-
-import os
-
 
 #GPT generated rules
 gpt_generated_rules = '../input/ground_truth_rule_semantic.xlsx'
