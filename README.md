@@ -9,6 +9,7 @@ Phase_2: includes a python script to check rule semantics satisfiablity using z3
 Phase_3: incldues a python script for rule syntax generation (zero-shot learning)  
 
 compatible with Python 3.9 
+
 #Used python packages:   
 openai 1.31  
 chromedriver_py 121.0  
