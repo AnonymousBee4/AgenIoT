@@ -8,8 +8,8 @@ Phase_1: includes two python scripts for capability selection and rule semantics
 Phase_2: includes a python script to check rule semantics satisfiablity using z3 solver  
 Phase_3: incldues a python script for rule syntax generation (zero-shot learning)  
 
-#Used python packages:  
-python 3.9  
+compatible with Python 3.9 
+#Used python packages:   
 openai 1.31  
 chromedriver_py 121.0  
 openpyxl 3.1.2  
